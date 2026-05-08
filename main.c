@@ -16,6 +16,11 @@ struct Profile {
 static const char base64_chars[] =
 "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+static FILE *vault = NULL;
+
+void write_file(char vault_dir[], int size, struct Profile *profiles);
+void read_file(char vault_dir[], int *size, int *capacity, struct Profile **profiles);
+
 gpgme_error_t passphrase_cb(void *hook, const char *uid_hint,
                             const char *passphrase_info, int last_bad, int fd);
 
@@ -31,7 +36,6 @@ unsigned char *base64_decode(const char *data, size_t input_len,
 
 void add_profile(gpgme_ctx_t ctx, int *size, int *capacity, struct Profile **profiles);
 void remove_profile(int *size, struct Profile *profiles);
-//edit these last two to encrypt and decrypt
 void edit_profile(gpgme_ctx_t ctx, int size, struct Profile *profiles);
 void list_profiles(gpgme_ctx_t ctx, int size, struct Profile *profiles);
 
@@ -39,6 +43,8 @@ int main() {
 
     gpgme_ctx_t ctx;
     gpgme_error_t err;
+
+    char vault_dir[] = "~/.config/lihim";
 
     int run = 1;
     char masterPass[100];
@@ -51,6 +57,7 @@ int main() {
         printf("Memory Allocation Failed");
         return 1;
     }
+    read_file(vault_dir, &size, &capacity, &profiles);
 
     gpgme_check_version(NULL);
     err = gpgme_new(&ctx);
@@ -103,6 +110,57 @@ int main() {
     gpgme_release(ctx);
 
     return 0;
+}
+
+void write_file(char vault_dir[], int size, struct Profile *profiles) {
+
+    vault = fopen(vault_dir, "w");
+    if (vault == NULL) {
+        printf("Couldn't write password directory");
+        return;
+    }
+
+    for (int i = 0; i <= size; i++) {
+        fprintf(vault, "%s %s %s %s", profiles[i].name,
+        profiles[i].username, profiles[i].password, profiles[i].url);
+    }
+
+    fclose(vault);
+
+}
+
+void read_file(char vault_dir[], int *size, int *capacity, struct Profile **profiles) {
+
+    char buff[sizeof(struct Profile)];
+    int file_len;
+
+    struct Profile *new_profile = malloc(sizeof(struct Profile));
+
+    vault = fopen(vault_dir, "r");
+    if (vault == NULL) {
+        printf("Couldn't read password directory");
+        return;
+    }
+
+    while (fgets(buff, sizeof(buff), vault) != NULL) {
+
+        sscanf(buff, "%s %s %s %s", new_profile->name,
+        new_profile->username, new_profile->password, new_profile->url);
+
+        if (*size >= *capacity) {
+            *capacity *= 2;
+            struct Profile *temp = realloc(*profiles, *capacity * sizeof(struct Profile));
+            if (temp == NULL) {
+                printf("Memory Allocation Failed");
+                free(new_profile);
+                return;
+            }
+            *profiles = temp;
+        }
+        (*profiles)[(*size)++] = *new_profile;
+    }
+
+    fclose(vault);
 }
 
 gpgme_error_t passphrase_cb(void *hook, const char *uid_hint,

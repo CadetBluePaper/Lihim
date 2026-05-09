@@ -6,36 +6,15 @@
 #include <gpgme.h>
 #include <unistd.h>
 #include <sys/stat.h>
-
-struct Profile {
-  char name[100];
-  char username[100];
-  char password[512];
-  char url[100];
-};
+#include "vault.h"
 
 static const char base64_chars[] =
 "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 static FILE *vault = NULL;
 
-void write_file(char vault_dir[], int size, struct Profile *profiles);
-void read_file(char vault_dir[], int *size, int *capacity, struct Profile **profiles);
-
-gpgme_error_t passphrase_cb(void *hook, const char *uid_hint,
-                            const char *passphrase_info, int last_bad, int fd);
-
-int encrypt_password(gpgme_ctx_t ctx, const char *plaintxt, char *out_cipher,
-                    size_t out_len);
-int decrypt_password(gpgme_ctx_t ctx, const char *cipher_b64, char *out_plain,
-                    size_t out_len);
-
-char *base64_encode(const unsigned char *data, size_t input_len,
-                    size_t *output_len);
-unsigned char *base64_decode(const char *data, size_t input_len,
-                            size_t *output_len);
-
-void add_profile(gpgme_ctx_t ctx, int *size, int *capacity, struct Profile **profiles);
+void add_profile(gpgme_ctx_t ctx, int *size, int *capacity,
+    struct Profile **profiles);
 void remove_profile(int *size, struct Profile *profiles);
 void edit_profile(gpgme_ctx_t ctx, int size, struct Profile *profiles);
 void list_profiles(gpgme_ctx_t ctx, int size, struct Profile *profiles);
@@ -138,7 +117,8 @@ void write_file(char vault_dir[], int size, struct Profile *profiles) {
     fclose(vault);
 }
 
-void read_file(char vault_dir[], int *size, int *capacity, struct Profile **profiles) {
+void read_file(char vault_dir[], int *size, int *capacity,
+    struct Profile **profiles) {
     char buff[sizeof(struct Profile) + 4];
 
     FILE *temp = fopen(vault_dir, "a");
@@ -162,7 +142,8 @@ void read_file(char vault_dir[], int *size, int *capacity, struct Profile **prof
 
         if (*size >= *capacity) {
             *capacity *= 2;
-            struct Profile *tmp = realloc(*profiles, *capacity * sizeof(struct Profile));
+            struct Profile *tmp =
+                realloc(*profiles, *capacity * sizeof(struct Profile));
             if (!tmp) { printf("Memory Allocation Failed"); break; }
             *profiles = tmp;
         }
@@ -197,7 +178,8 @@ int encrypt_password(gpgme_ctx_t ctx, const char *plaintxt, char *out_cipher,
         return 0;
     }
 
-    err = gpgme_op_encrypt(ctx, NULL, GPGME_ENCRYPT_SYMMETRIC, plain_data, cipher_data);
+    err = gpgme_op_encrypt(ctx, NULL, GPGME_ENCRYPT_SYMMETRIC,
+        plain_data, cipher_data);
     if (err) {
         printf("Encryption failed: %s\n", gpgme_strerror(err));
         gpgme_data_release(plain_data);

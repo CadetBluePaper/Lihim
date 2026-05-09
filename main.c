@@ -8,7 +8,6 @@
 #include <sys/stat.h>
 
 #include "vault.h"
-#include "vault.c"
 
 void add_profile(gpgme_ctx_t ctx, int *size, int *capacity,
     struct Profile **profiles);
@@ -33,7 +32,6 @@ int main() {
 
     int size = 0;
     int capacity = 4;
-
 
     struct Profile *profiles = malloc(capacity * sizeof(struct Profile));
     if (profiles == NULL) {
@@ -205,7 +203,7 @@ void edit_profile(gpgme_ctx_t ctx, int size, struct Profile *profiles) {
     for (int i = 0; i <= size - 1; i++) {
         if (strcmp(name, profiles[i].name) == 0) {
             if (strcmp(field, "name") == 0) {
-                strncpy(profiles[i].name, value, sizeof(profiles[i].name) - 1);
+                snprintf(profiles[i].name, sizeof(profiles[i].name), "%s", value);
                 profiles[i].name[sizeof(profiles[i].name) - 1] = '\0';
             }
             else if (strcmp(field, "username") == 0) {

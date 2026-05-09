@@ -7,7 +7,6 @@
 #include <gpgme.h>
 
 #include "vault.h"
-#include "vault.c"
 
 char *read_message(void);
 void write_message(const char *json);

@@ -1,5 +1,4 @@
-//fix errors here - before step 10
-
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -64,6 +63,10 @@ void read_file(char vault_dir[], int *size, int *capacity,
 
 gpgme_error_t passphrase_cb(void *hook, const char *uid_hint,
                             const char *passphrase_info, int last_bad, int fd) {
+
+    (void)uid_hint;
+    (void)passphrase_info;
+    (void)last_bad;
 
     const char *passphrase = (const char *)hook;
     write(fd, passphrase, strlen(passphrase));
@@ -204,13 +207,13 @@ unsigned char *base64_decode(const char *data, size_t input_len,
 
     for (size_t i = 0, j = 0; i < input_len;) {
         uint32_t sextet_a
-            = data[i] == '=' ? 0 & i++ : strchr(base64_chars, data[i++]) - base64_chars;
+            = data[i] == '=' ? 0 & i++ : (size_t)(strchr(base64_chars, data[i++]) - base64_chars);
         uint32_t sextet_b =
-            data[i] == '=' ? 0 & i++ : strchr(base64_chars, data[i++]) - base64_chars;
+            data[i] == '=' ? 0 & i++ : (size_t)(strchr(base64_chars, data[i++]) - base64_chars);
         uint32_t sextet_c =
-            data[i] == '=' ? 0 & i++ : strchr(base64_chars, data[i++]) - base64_chars;
+            data[i] == '=' ? 0 & i++ : (size_t)(strchr(base64_chars, data[i++]) - base64_chars);
         uint32_t sextet_d =
-            data[i] == '=' ? 0 & i++ : strchr(base64_chars, data[i++]) - base64_chars;
+            data[i] == '=' ? 0 & i++ : (size_t)(strchr(base64_chars, data[i++]) - base64_chars);
         uint32_t triple =
             (sextet_a << 3 * 6) + (sextet_b << 2 * 6) +
             (sextet_c << 1 * 6) + (sextet_d << 0 * 6);

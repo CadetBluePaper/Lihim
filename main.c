@@ -48,13 +48,11 @@ int main() {
     char vault_dir[256];
     const char *home = getenv("HOME");
 
-    char dir[256];
     snprintf(vault_dir, sizeof(vault_dir), "%s/.config/lihim", home);
     mkdir(vault_dir, 0700);
 
     snprintf(vault_dir, sizeof(vault_dir), "%s/.config/lihim/vault.txt", home);
 
-    int run = 1;
     char masterPass[100];
 
     int size = 0;
@@ -85,7 +83,7 @@ int main() {
 
     gpgme_set_passphrase_cb(ctx, passphrase_cb, masterPass);
 
-    while (run) {
+    while (1) {
         printf("\033[H\033[J");
 
         printf("1. Add Profile\n");
@@ -115,11 +113,12 @@ int main() {
         else if (strcmp(choice, "4") == 0)
             list_profiles(ctx, size, profiles);
         else if (strcmp(choice, "5") == 0)
-            return 0;
+            break;
         else
             printf("Invalid Input");
     }
 
+    memset(masterPass, 0, sizeof(masterPass));
     free(profiles);
     profiles = NULL;
     gpgme_release(ctx);
@@ -128,59 +127,47 @@ int main() {
 }
 
 void write_file(char vault_dir[], int size, struct Profile *profiles) {
-
     vault = fopen(vault_dir, "w");
-    if (vault == NULL) {
-        printf("Couldn't write password directory");
-        return;
-    }
+    if (vault == NULL) { printf("Couldn't write password directory"); return; }
 
     for (int i = 0; i < size; i++) {
-        fprintf(vault, "%s %s %s %s", profiles[i].name,
-        profiles[i].username, profiles[i].password, profiles[i].url);
+        fprintf(vault, "%s|%s|%s|%s\n",
+            profiles[i].name, profiles[i].username,
+            profiles[i].password, profiles[i].url);
     }
-
     fclose(vault);
-
 }
 
-//maybe delimeter
 void read_file(char vault_dir[], int *size, int *capacity, struct Profile **profiles) {
-
-    char buff[sizeof(struct Profile)];
-    int file_len;
-
-    struct Profile *new_profile = malloc(sizeof(struct Profile));
+    char buff[sizeof(struct Profile) + 4];
 
     FILE *temp = fopen(vault_dir, "a");
-    if (temp) {
-        fclose(temp);
-    }
+    if (temp) fclose(temp);
 
     vault = fopen(vault_dir, "r");
-    if (vault == NULL) {
-        printf("Couldn't find vault directory");
-        return;
-    }
+    if (vault == NULL) { printf("Couldn't find vault directory"); return; }
 
     while (fgets(buff, sizeof(buff), vault) != NULL) {
+        buff[strcspn(buff, "\n")] = '\0';
 
-        sscanf(buff, "%s %s %s %s", new_profile->name,
-        new_profile->username, new_profile->password, new_profile->url);
+        struct Profile p = {0};
+        char *tok = strtok(buff, "|");
+        if (tok) strncpy(p.name, tok, sizeof(p.name) - 1);
+        tok = strtok(NULL, "|");
+        if (tok) strncpy(p.username, tok, sizeof(p.username) - 1);
+        tok = strtok(NULL, "|");
+        if (tok) strncpy(p.password, tok, sizeof(p.password) - 1);
+        tok = strtok(NULL, "|");
+        if (tok) strncpy(p.url, tok, sizeof(p.url) - 1);
 
         if (*size >= *capacity) {
             *capacity *= 2;
-            struct Profile *temp = realloc(*profiles, *capacity * sizeof(struct Profile));
-            if (temp == NULL) {
-                printf("Memory Allocation Failed");
-                free(new_profile);
-                return;
-            }
-            *profiles = temp;
+            struct Profile *tmp = realloc(*profiles, *capacity * sizeof(struct Profile));
+            if (!tmp) { printf("Memory Allocation Failed"); break; }
+            *profiles = tmp;
         }
-        (*profiles)[(*size)++] = *new_profile;
+        (*profiles)[(*size)++] = p;
     }
-
     fclose(vault);
 }
 
@@ -210,7 +197,7 @@ int encrypt_password(gpgme_ctx_t ctx, const char *plaintxt, char *out_cipher,
         return 0;
     }
 
-    err = gpgme_op_encrypt(ctx, NULL, 0, plain_data, cipher_data);
+    err = gpgme_op_encrypt(ctx, NULL, GPGME_ENCRYPT_SYMMETRIC, plain_data, cipher_data);
     if (err) {
         printf("Encryption failed: %s\n", gpgme_strerror(err));
         gpgme_data_release(plain_data);
@@ -355,12 +342,14 @@ void add_profile(gpgme_ctx_t ctx, int *size, int *capacity, struct Profile **pro
     printf("Enter a name: ");
     fgets(buff, sizeof(buff), stdin);
     buff[strcspn(buff, "\n")] = '\0';
-    strcpy(new_profile->name, buff);
+    strncpy(new_profile->name, buff, sizeof(new_profile->name) - 1);
+    new_profile->name[sizeof(new_profile->name) - 1] = '\0';
 
     printf("Enter a username: ");
     fgets(buff, sizeof(buff), stdin);
     buff[strcspn(buff, "\n")] = '\0';
-    strcpy(new_profile->username, buff);
+    strncpy(new_profile->username, buff, sizeof(new_profile->username) - 1);
+    new_profile->username[sizeof(new_profile->username) - 1] = '\0';
 
     printf("Enter a password: ");
     fgets(buff, sizeof(buff), stdin);
@@ -370,13 +359,15 @@ void add_profile(gpgme_ctx_t ctx, int *size, int *capacity, struct Profile **pro
         sizeof(new_profile->password))) {
             printf("Failed to encrypt password\n");
             fgets(buff, sizeof(buff), stdin);
+            free(new_profile);
             return;
     }
 
     printf("Enter a url: ");
     fgets(buff, sizeof(buff), stdin);
     buff[strcspn(buff, "\n")] = '\0';
-    strcpy(new_profile->url, buff);
+    strncpy(new_profile->url, buff, sizeof(new_profile->url) - 1);
+    new_profile->url[sizeof(new_profile->url) - 1] = '\0';
 
     if (*size >= *capacity) {
         *capacity *= 2;
@@ -443,10 +434,14 @@ void edit_profile(gpgme_ctx_t ctx, int size, struct Profile *profiles) {
 
     for (int i = 0; i <= size - 1; i++) {
         if (strcmp(name, profiles[i].name) == 0) {
-            if (strcmp(field, "name") == 0)
-                strcpy(profiles[i].name, value);
-            else if (strcmp(field, "username") == 0)
-                strcpy(profiles[i].username, value);
+            if (strcmp(field, "name") == 0) {
+                strncpy(profiles[i].name, value, sizeof(profiles[i].name) - 1);
+                profiles[i].name[sizeof(profiles[i].name) - 1] = '\0';
+            }
+            else if (strcmp(field, "username") == 0) {
+                strncpy(profiles[i].username, value, sizeof(profiles[i].username) - 1);
+                profiles[i].username[sizeof(profiles[i].username) - 1] = '\0';
+            }
             else if (strcmp(field, "password") == 0) {
                 if (!encrypt_password(ctx, value, profiles[i].password,
                     sizeof(profiles[i].password))) {
@@ -456,27 +451,28 @@ void edit_profile(gpgme_ctx_t ctx, int size, struct Profile *profiles) {
                     return;
                 }
             }
-            else if (strcmp(field, "url") == 0)
-                strcpy(profiles[i].url, value);
+            else if (strcmp(field, "url") == 0) {
+                strncpy(profiles[i].url, value, sizeof(profiles[i].url) - 1);
+                profiles[i].url[sizeof(profiles[i].url) - 1] = '\0';
+            }
             else {
                 printf("Invalid field type");
                 return;
             }
-
 
             printf("Changed %s's %s to %s\n", name, field, value);
             fgets(name, sizeof(name), stdin);
             return;
         }
     }
-    printf("Couldn't find profile\"%s\"", name);
+    printf("Couldn't find profile \"%s\"", name);
     fgets(name, sizeof(name), stdin);
 }
 
 void list_profiles(gpgme_ctx_t ctx, int size, struct Profile *profiles) {
 
     char buff[100];
-    char decrypted[100];
+    char decrypted[512];
 
     printf("\033[H\033[J");
 

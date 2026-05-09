@@ -5,6 +5,7 @@
 #include <string.h>
 #include <gpgme.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 struct Profile {
   char name[100];
@@ -44,13 +45,21 @@ int main() {
     gpgme_ctx_t ctx;
     gpgme_error_t err;
 
-    char vault_dir[] = "~/.config/lihim";
+    char vault_dir[256];
+    const char *home = getenv("HOME");
+
+    char dir[256];
+    snprintf(vault_dir, sizeof(vault_dir), "%s/.config/lihim", home);
+    mkdir(vault_dir, 0700);
+
+    snprintf(vault_dir, sizeof(vault_dir), "%s/.config/lihim/vault.txt", home);
 
     int run = 1;
     char masterPass[100];
 
     int size = 0;
     int capacity = 1;
+
 
     struct Profile *profiles = malloc(capacity * sizeof(struct Profile));
     if (profiles == NULL) {
@@ -91,12 +100,18 @@ int main() {
         fgets(choice, sizeof(choice), stdin);
         choice[strcspn(choice, "\n")] = '\0';
 
-        if (strcmp(choice, "1") == 0)
+        if (strcmp(choice, "1") == 0) {
             add_profile(ctx, &size, &capacity, &profiles);
-        else if (strcmp(choice, "2") == 0)
+            write_file(vault_dir, size, profiles);
+        }
+        else if (strcmp(choice, "2") == 0) {
             remove_profile(&size, profiles);
-        else if (strcmp(choice, "3") == 0)
+            write_file(vault_dir, size, profiles);
+        }
+        else if (strcmp(choice, "3") == 0) {
             edit_profile(ctx, size, profiles);
+            write_file(vault_dir, size, profiles);
+        }
         else if (strcmp(choice, "4") == 0)
             list_profiles(ctx, size, profiles);
         else if (strcmp(choice, "5") == 0)
@@ -120,7 +135,7 @@ void write_file(char vault_dir[], int size, struct Profile *profiles) {
         return;
     }
 
-    for (int i = 0; i <= size; i++) {
+    for (int i = 0; i < size; i++) {
         fprintf(vault, "%s %s %s %s", profiles[i].name,
         profiles[i].username, profiles[i].password, profiles[i].url);
     }
@@ -129,6 +144,7 @@ void write_file(char vault_dir[], int size, struct Profile *profiles) {
 
 }
 
+//maybe delimeter
 void read_file(char vault_dir[], int *size, int *capacity, struct Profile **profiles) {
 
     char buff[sizeof(struct Profile)];
@@ -136,9 +152,14 @@ void read_file(char vault_dir[], int *size, int *capacity, struct Profile **prof
 
     struct Profile *new_profile = malloc(sizeof(struct Profile));
 
+    FILE *temp = fopen(vault_dir, "a");
+    if (temp) {
+        fclose(temp);
+    }
+
     vault = fopen(vault_dir, "r");
     if (vault == NULL) {
-        printf("Couldn't read password directory");
+        printf("Couldn't find vault directory");
         return;
     }
 

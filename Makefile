@@ -1,6 +1,6 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -O2
-LDFLAGS = -lgpgme
+LDFLAGS = -lgpgme -lnotcurses -lnotcurses-core
 
 all: lihim lihim-host
 

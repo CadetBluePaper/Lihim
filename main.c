@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <termios.h>
 #include "vault.h"
 
 #define COL_BG_DARK   0x0d0f1a
@@ -52,6 +53,9 @@ typedef struct {
     Mode mode;
 } UIState;
 
+void disable_echo(void);
+void enable_echo(void);
+
 void draw_box(struct ncplane *plane, int y, int x, int rows, int cols,
               const char *title, uint64_t border_ch, uint64_t title_ch);
 void draw_sidebar(UIState *ui, int size, struct Profile *profiles);
@@ -65,7 +69,7 @@ void redraw(UIState *ui, gpgme_ctx_t ctx,
             int size, struct Profile *profile);
 int handle_form_key(UIState *ui, uint32_t key);
 
-int main() {
+int main(void) {
 
     char vault_dir[256];
     const char *home = getenv("HOME");
@@ -92,8 +96,14 @@ int main() {
 
     printf("Master Password: ");
     fflush(stdout);
+
+    disable_echo();
     fgets(masterPass, sizeof(masterPass), stdin);
     masterPass[strcspn(masterPass, "\n")] = '\0';
+    enable_echo();
+
+    printf("\n");
+
     gpgme_set_passphrase_cb(ctx, passphrase_cb, masterPass);
 
     struct notcurses_options opts = {
@@ -184,15 +194,12 @@ int main() {
             }
             else if (key == 'e' || key == 'E') {
                 if (size > 0) {
-                    strncpy(ui.form_name,
-                            profiles[ui.selected].name,
-                            sizeof(ui.form_name) - 1);
-                    strncpy(ui.form_username,
-                            profiles[ui.selected].username,
-                            sizeof(ui.form_username) - 1);
-                    strncpy(ui.form_url,
-                            profiles[ui.selected].url,
-                            sizeof(ui.form_url) - 1);
+                    snprintf(ui.form_name, sizeof(ui.form_name),
+                        "%s", profiles[ui.selected].name);
+                    snprintf(ui.form_username, sizeof(ui.form_username),
+                        "%s", profiles[ui.selected].username);
+                    snprintf(ui.form_url, sizeof(ui.form_url),
+                        "%s", profiles[ui.selected].url);
                     memset(ui.form_password, 0, sizeof(ui.form_password));
                     ui.form_field = 0;
                     ui.mode = MODE_EDIT;
@@ -218,12 +225,12 @@ int main() {
                     }
                     struct Profile *np = &profiles[size];
                     memset(np, 0, sizeof(*np));
-                    strncpy(np->name,     ui.form_name,
-                            sizeof(np->name) - 1);
-                    strncpy(np->username, ui.form_username,
-                            sizeof(np->username) - 1);
-                    strncpy(np->url,      ui.form_url,
-                            sizeof(np->url) - 1);
+                    snprintf(np->name, sizeof(np->name),
+                        "%s", ui.form_name);
+                    snprintf(np->username, sizeof(np->username),
+                        "%s", ui.form_username);
+                    snprintf(np->url, sizeof(np->url),
+                        "%s", ui.form_url);
                     if (encrypt_password(ctx, ui.form_password,
                                             np->password,
                                             sizeof(np->password))) {
@@ -245,12 +252,12 @@ int main() {
             }
             else if (key == NCKEY_ENTER) {
                 struct Profile *ep = &profiles[ui.selected];
-                strncpy(ep->name, ui.form_name,
-                        sizeof(ep->name) - 1);
-                strncpy(ep->username, ui.form_username,
-                        sizeof(ep->username) - 1);
-                strncpy(ep->url, ui.form_url,
-                        sizeof(ep->url) - 1);
+                snprintf(ep->name, sizeof(ep->name),
+                    "%s", ui.form_name);
+                snprintf(ep->username, sizeof(ep->username),
+                    "%s", ui.form_username);
+                snprintf(ep->url, sizeof(ep->url),
+                    "%s", ui.form_url);
                 if (strlen(ui.form_password) > 0) {
                     encrypt_password(ctx, ui.form_password,
                                         ep->password, sizeof(ep->password));
@@ -284,6 +291,20 @@ int main() {
     gpgme_release(ctx);
 
     return 0;
+}
+
+void disable_echo(void) {
+    struct termios tty;
+    tcgetattr(STDIN_FILENO, &tty);
+    tty.c_lflag &= ~ECHO;
+    tty.c_lflag &= ~ECHOE;
+    tcsetattr(STDIN_FILENO, TCSANOW, &tty);
+}
+void enable_echo(void) {
+    struct termios tty;
+    tcgetattr(STDIN_FILENO, &tty);
+    tty.c_lflag |= ECHO;
+    tcsetattr(STDIN_FILENO, TCSANOW, &tty);
 }
 
 void draw_box(struct ncplane *plane, int y, int x, int rows, int cols,
@@ -339,7 +360,7 @@ void draw_sidebar(UIState *ui, int size, struct Profile *profiles) {
 
     draw_box(p, 0, 0, rows - 1, cols, "Lihim", border_ch, title_ch);
 
-    for (unsigned int i = 0; i < size && i < rows - 4; i++) {
+    for (int i = 0; i < (int)size && i < (int)rows - 4; i++) {
         int row = i + 2;
         int is_selected = (i == ui->selected);
 

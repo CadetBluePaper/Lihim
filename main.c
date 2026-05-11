@@ -1,76 +1,115 @@
 #define _XOPEN_SOURCE 700
-#include <notcurses/nckeys.h>
-#include <notcurses/notcurses.h>
 #include <gpgme.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <termios.h>
+#include <fcntl.h>
 #include "vault.h"
 
-#define COL_BG_DARK   0x0d0f1a
-#define COL_BG_MID    0x1a1d2e
-#define COL_BG_LIGHT  0x252840
-#define COL_ACCENT    0x7c3aed
-#define COL_ACCENT2   0x06b6d4
-#define COL_GREEN     0x10b981
-#define COL_RED       0xef4444
-#define COL_TEXT      0xe2e8f0
-#define COL_MUTED     0x64748b
-#define COL_BORDER    0x334155
+#define RED     "\x1b[31m"
+#define GREEN   "\x1b[32m"
+#define YELLOW  "\x1b[33m"
+#define BLUE    "\x1b[34m"
+#define MAGENTA "\x1b[35m"
+#define CYAN    "\x1b[36m"
+#define WHITE   "\x1b[37m"
+#define BOLD    "\x1b[1m"
+#define DIM     "\x1b[2m"
+#define RESET   "\x1b[0m"
 
-typedef enum {
-    MODE_LIST,
-    MODE_ADD,
-    MODE_EDIT,
-    MODE_DELETE
-} Mode;
+static void disable_echo(void) {
+    struct termios tty;
+    int fd = open("/dev/tty", O_RDWR);
+    if (fd == -1) fd = STDIN_FILENO;
+    if (tcgetattr(fd, &tty) == 0) {
+        tty.c_lflag &= ~(ECHO | ECHONL);
+        tcsetattr(fd, TCSAFLUSH, &tty);
+    }
+    if (fd != STDIN_FILENO) close(fd);
+}
 
-typedef struct {
+static void enable_echo(void) {
+    struct termios tty;
+    int fd = open("/dev/tty", O_RDWR);
+    if (fd == -1) fd = STDIN_FILENO;
+    if (tcgetattr(fd, &tty) == 0) {
+        tty.c_lflag |= ECHO;
+        tcsetattr(fd, TCSANOW, &tty);
+    }
+    if (fd != STDIN_FILENO) close(fd);
+}
 
-    struct notcurses *nc;
-    struct ncplane *stdplane;
-    struct ncplane *sidebar;
-    struct ncplane *main_panel;
-    struct ncplane *statusbar;
+static void clear_screen(void) {
+    printf("\x1b[2J\x1b[H");
+}
 
-    int term_rows;
-    int term_cols;
+static void print_header(const char *title) {
+    printf("\n" BOLD CYAN "  %s" RESET "\n", title);
+    printf(CYAN "  %s" RESET "\n\n", "═══════════════════════════════════════");
+}
 
-    int selected;
+static void print_menu(int size, int selected) {
+    printf("\n" DIM "  ── Commands ──" RESET "\n");
+    if (size > 0) {
+        printf("  " GREEN "[j]" RESET " down    " GREEN "[k]" RESET " up     " GREEN "[v]" RESET " reveal  " GREEN "[c]" RESET " copy\n");
+        printf("  " GREEN "[e]" RESET " edit    " GREEN "[d]" RESET " delete\n");
+    }
+    printf("  " GREEN "[a]" RESET " add     " GREEN "[q]" RESET " quit\n");
+    if (size > 0) {
+        printf("\n  " DIM "Selected: %d / %d" RESET "\n", selected + 1, size);
+    }
+    printf("\n  " DIM "choice> " RESET);
+    fflush(stdout);
+}
 
-    char form_name[100];
-    char form_username[100];
-    char form_password[100];
-    char form_url[100];
-    int form_field;
+static void read_line_hidden(char *buf, size_t len) {
+    disable_echo();
+    if (fgets(buf, len, stdin)) {
+        buf[strcspn(buf, "\n")] = '\0';
+    }
+    enable_echo();
+    printf("\n");
+}
 
-    int show_password;
+static void read_line(char *buf, size_t len) {
+    if (fgets(buf, len, stdin)) {
+        buf[strcspn(buf, "\n")] = '\0';
+    }
+}
 
-    Mode mode;
-} UIState;
+static void print_profile(int idx, struct Profile *p, int selected) {
+    if (selected) {
+        printf(BOLD CYAN "  ▶ [%d] %-20s" RESET "\n", idx + 1, p->name);
+    } else {
+        printf("    [%d] %-20s\n", idx + 1, p->name);
+    }
+}
 
-void disable_echo(void);
-void enable_echo(void);
-
-void draw_box(struct ncplane *plane, int y, int x, int rows, int cols,
-              const char *title, uint64_t border_ch, uint64_t title_ch);
-void draw_sidebar(UIState *ui, int size, struct Profile *profiles);
-void draw_detail(UIState *ui, gpgme_ctx_t ctx, int size,
-                struct Profile *profiles);
-void draw_form(UIState *ui, const char *title);
-void draw_delete(UIState *ui, int size, struct Profile *profiles);
-void draw_statusbar(UIState *ui);
-
-void redraw(UIState *ui, gpgme_ctx_t ctx,
-            int size, struct Profile *profile);
-int handle_form_key(UIState *ui, uint32_t key);
+static void print_detail(gpgme_ctx_t ctx, struct Profile *p, int reveal) {
+    char decrypted[512] = {0};
+    printf("\n" BOLD WHITE "  Profile: %s" RESET "\n\n", p->name);
+    printf("  " DIM "Username:" RESET "  %s\n", p->username);
+    printf("  " DIM "URL:" RESET "        %s\n", p->url);
+    if (decrypt_password(ctx, p->password, decrypted, sizeof(decrypted))) {
+        if (reveal) {
+            printf("  " DIM "Password:" RESET "  " GREEN "%s" RESET "\n", decrypted);
+        } else {
+            int n = strlen(decrypted);
+            printf("  " DIM "Password:" RESET "  ");
+            for (int i = 0; i < n; i++) printf("*");
+            printf("\n");
+        }
+        memset(decrypted, 0, sizeof(decrypted));
+    } else {
+        printf("  " DIM "Password:" RESET "  " RED "[decryption failed]" RESET "\n");
+    }
+    printf("\n");
+}
 
 int main(void) {
-
     char vault_dir[256];
     const char *home = getenv("HOME");
     snprintf(vault_dir, sizeof(vault_dir), "%s/.config/lihim", home);
@@ -80,8 +119,8 @@ int main(void) {
     int size = 0;
     int capacity = 4;
     struct Profile *profiles = malloc(capacity * sizeof(struct Profile));
-    if (profiles == NULL) {
-        printf("Memory Allocation Failed");
+    if (!profiles) {
+        fprintf(stderr, "Memory allocation failed\n");
         return 1;
     }
     read_file(vault_dir, &size, &capacity, &profiles);
@@ -93,674 +132,165 @@ int main(void) {
     gpgme_set_pinentry_mode(ctx, GPGME_PINENTRY_MODE_LOOPBACK);
 
     char masterPass[100] = {0};
-
-    printf("Master Password: ");
+    printf(BOLD "Master Password: " RESET);
     fflush(stdout);
-
-    disable_echo();
-    fgets(masterPass, sizeof(masterPass), stdin);
-    masterPass[strcspn(masterPass, "\n")] = '\0';
-    enable_echo();
-
-    printf("\n");
-
+    read_line_hidden(masterPass, sizeof(masterPass));
     gpgme_set_passphrase_cb(ctx, passphrase_cb, masterPass);
 
-    struct notcurses_options opts = {
-        .flags = NCOPTION_SUPPRESS_BANNERS,
-    };
-    struct notcurses *nc = notcurses_init(&opts, NULL);
-    if (!nc) {
-        printf("notcurses init failed\n");
-        return 1;
-    }
+    int selected = 0;
+    int reveal = 0;
+    int running = 1;
 
-    unsigned int term_rows, term_cols;
-    struct ncplane *stdplane =
-        notcurses_stddim_yx(nc, &term_rows, &term_cols);
+    while (running) {
+        clear_screen();
+        print_header("Lihim Password Vault");
 
-    ncplane_set_bg_rgb8(stdplane,
-        (COL_BG_DARK >> 16) & 0xff,
-        (COL_BG_DARK >> 8)  & 0xff,
-        (COL_BG_DARK)       & 0xff);
-    ncplane_erase(stdplane);
-
-    int sidebar_w   = 28;
-    int statusbar_h = 1;
-    int panel_h     = term_rows - statusbar_h;
-    int main_w      = term_cols - sidebar_w;
-
-    struct ncplane_options sidebar_opts = {
-        .y = 0, .x = 0,
-        .rows = panel_h, .cols = sidebar_w,
-    };
-    struct ncplane *sidebar = ncplane_create(stdplane, &sidebar_opts);
-
-    struct ncplane_options main_opts = {
-        .y = 0, .x = sidebar_w,
-        .rows = panel_h, .cols = main_w,
-    };
-    struct ncplane *main_panel = ncplane_create(stdplane, &main_opts);
-
-    struct ncplane_options status_opts = {
-        .y = term_rows - statusbar_h, .x = 0,
-        .rows = statusbar_h, .cols = term_cols,
-    };
-    struct ncplane *statusbar = ncplane_create(stdplane, &status_opts);
-
-    UIState ui = {
-        .nc          = nc,
-        .stdplane    = stdplane,
-        .sidebar     = sidebar,
-        .main_panel  = main_panel,
-        .statusbar   = statusbar,
-        .term_rows   = term_rows,
-        .term_cols   = term_cols,
-        .selected    = 0,
-        .mode        = MODE_LIST,
-        .show_password = 0,
-        .form_field  = 0,
-    };
-
-    redraw(&ui, ctx, size, profiles);
-
-    struct ncinput ni;
-    while (1) {
-        uint32_t key = notcurses_get_blocking(nc, &ni);
-
-        if (ui.mode == MODE_LIST) {
-
-            if (key == 'q' || key == 'Q') {
-                break;
+        if (size == 0) {
+            printf("  " DIM "No profiles yet. Press [a] to add." RESET "\n");
+        } else {
+            for (int i = 0; i < size; i++) {
+                print_profile(i, &profiles[i], i == selected);
             }
-            else if (key == NCKEY_UP && ui.selected > 0) {
-                ui.selected--;
-                ui.show_password = 0;
-            }
-            else if (key == NCKEY_DOWN && ui.selected < size - 1) {
-                ui.selected++;
-                ui.show_password = 0;
-            }
-            else if (key == 'v' || key == 'V') {
-                ui.show_password = !ui.show_password;
-            }
-            else if (key == 'a' || key == 'A') {
-                memset(ui.form_name, 0, sizeof(ui.form_name));
-                memset(ui.form_username, 0, sizeof(ui.form_username));
-                memset(ui.form_password, 0, sizeof(ui.form_password));
-                memset(ui.form_url, 0, sizeof(ui.form_url));
-                ui.form_field = 0;
-                ui.mode = MODE_ADD;
-            }
-            else if (key == 'e' || key == 'E') {
-                if (size > 0) {
-                    snprintf(ui.form_name, sizeof(ui.form_name),
-                        "%s", profiles[ui.selected].name);
-                    snprintf(ui.form_username, sizeof(ui.form_username),
-                        "%s", profiles[ui.selected].username);
-                    snprintf(ui.form_url, sizeof(ui.form_url),
-                        "%s", profiles[ui.selected].url);
-                    memset(ui.form_password, 0, sizeof(ui.form_password));
-                    ui.form_field = 0;
-                    ui.mode = MODE_EDIT;
-                }
-            }
-            else if (key == 'd' || key == 'D') {
-                if (size > 0) {
-                    ui.mode = MODE_DELETE;
-                }
+            if (selected >= 0 && selected < size) {
+                print_detail(ctx, &profiles[selected], reveal);
             }
         }
-        else if (ui.mode == MODE_ADD) {
-            if (key == NCKEY_ESC) {
-                ui.mode = MODE_LIST;
-            }
-            else if (key == NCKEY_ENTER) {
-                if (strlen(ui.form_name) > 0) {
-                    if (size >= capacity) {
-                        capacity *= 2;
-                        struct Profile *tmp = realloc(profiles,
-                            capacity * sizeof(struct Profile));
-                        if (tmp) profiles = tmp;
-                    }
-                    struct Profile *np = &profiles[size];
-                    memset(np, 0, sizeof(*np));
-                    snprintf(np->name, sizeof(np->name),
-                        "%s", ui.form_name);
-                    snprintf(np->username, sizeof(np->username),
-                        "%s", ui.form_username);
-                    snprintf(np->url, sizeof(np->url),
-                        "%s", ui.form_url);
-                    if (encrypt_password(ctx, ui.form_password,
-                                            np->password,
-                                            sizeof(np->password))) {
-                        size++;
-                        ui.selected = size - 1;
-                        write_file(vault_dir, size, profiles);
-                    }
-                    memset(ui.form_password, 0, sizeof(ui.form_password));
+
+        print_menu(size, selected);
+
+        char choice[16] = {0};
+        read_line(choice, sizeof(choice));
+
+        switch (choice[0]) {
+        case 'q':
+        case 'Q':
+            running = 0;
+            break;
+
+        case 'v':
+        case 'V':
+            if (size > 0) reveal = !reveal;
+            break;
+
+        case 'a':
+        case 'A': {
+            char name[100] = {0};
+            char user[100] = {0};
+            char pass[100] = {0};
+            char url[100] = {0};
+            printf("\n" BOLD CYAN "  Add Profile" RESET "\n\n");
+            printf("  Name:     "); read_line(name, sizeof(name));
+            printf("  Username: "); read_line(user, sizeof(user));
+            printf("  Password: "); read_line_hidden(pass, sizeof(pass));
+            printf("  URL:      "); read_line(url, sizeof(url));
+            if (strlen(name) > 0) {
+                if (size >= capacity) {
+                    capacity *= 2;
+                    struct Profile *tmp = realloc(profiles, capacity * sizeof(struct Profile));
+                    if (tmp) profiles = tmp;
                 }
-                ui.mode = MODE_LIST;
-            }
-            else {
-                handle_form_key(&ui, key);
-            }
-        }
-        else if (ui.mode == MODE_EDIT) {
-            if (key == NCKEY_ESC) {
-                ui.mode = MODE_LIST;
-            }
-            else if (key == NCKEY_ENTER) {
-                struct Profile *ep = &profiles[ui.selected];
-                snprintf(ep->name, sizeof(ep->name),
-                    "%s", ui.form_name);
-                snprintf(ep->username, sizeof(ep->username),
-                    "%s", ui.form_username);
-                snprintf(ep->url, sizeof(ep->url),
-                    "%s", ui.form_url);
-                if (strlen(ui.form_password) > 0) {
-                    encrypt_password(ctx, ui.form_password,
-                                        ep->password, sizeof(ep->password));
-                    memset(ui.form_password, 0, sizeof(ui.form_password));
+                struct Profile *np = &profiles[size];
+                memset(np, 0, sizeof(*np));
+                snprintf(np->name, sizeof(np->name), "%s", name);
+                snprintf(np->username, sizeof(np->username), "%s", user);
+                snprintf(np->url, sizeof(np->url), "%s", url);
+                if (encrypt_password(ctx, pass, np->password, sizeof(np->password))) {
+                    size++;
+                    selected = size - 1;
+                    write_file(vault_dir, size, profiles);
                 }
-                write_file(vault_dir, size, profiles);
-                ui.mode = MODE_LIST;
+                memset(pass, 0, sizeof(pass));
             }
-            else {
-                handle_form_key(&ui, key);
-            }
+            break;
         }
-        else if (ui.mode == MODE_DELETE) {
-            if (key == 'y' || key == 'Y') {
-                profiles[ui.selected] = profiles[size - 1];
+
+        case 'e':
+        case 'E': {
+            if (size == 0 || selected < 0 || selected >= size) break;
+            struct Profile *ep = &profiles[selected];
+            char name[100] = {0};
+            char user[100] = {0};
+            char pass[100] = {0};
+            char url[100] = {0};
+            printf("\n" BOLD CYAN "  Edit Profile" RESET "\n\n");
+            printf("  Name [%s]:     ", ep->name); read_line(name, sizeof(name));
+            printf("  Username [%s]: ", ep->username); read_line(user, sizeof(user));
+            printf("  Password [keep]: "); read_line_hidden(pass, sizeof(pass));
+            printf("  URL [%s]:      ", ep->url); read_line(url, sizeof(url));
+            if (strlen(name) > 0) snprintf(ep->name, sizeof(ep->name), "%s", name);
+            if (strlen(user) > 0) snprintf(ep->username, sizeof(ep->username), "%s", user);
+            if (strlen(url) > 0) snprintf(ep->url, sizeof(ep->url), "%s", url);
+            if (strlen(pass) > 0) {
+                encrypt_password(ctx, pass, ep->password, sizeof(ep->password));
+                memset(pass, 0, sizeof(pass));
+            }
+            write_file(vault_dir, size, profiles);
+            reveal = 0;
+            break;
+        }
+
+        case 'd':
+        case 'D': {
+            if (size == 0 || selected < 0 || selected >= size) break;
+            printf("\n" RED "  Delete \"%s\"? [y/N]: " RESET, profiles[selected].name);
+            fflush(stdout);
+            char confirm[8] = {0};
+            read_line(confirm, sizeof(confirm));
+            if (confirm[0] == 'y' || confirm[0] == 'Y') {
+                profiles[selected] = profiles[size - 1];
                 size--;
-                if (ui.selected >= size) ui.selected = size - 1;
+                if (selected >= size) selected = size > 0 ? size - 1 : 0;
                 write_file(vault_dir, size, profiles);
-                ui.mode = MODE_LIST;
             }
-            else if (key == 'n' || key == 'N' || key == NCKEY_ESC) {
-                ui.mode = MODE_LIST;
-            }
+            reveal = 0;
+            break;
         }
-        redraw(&ui, ctx, size, profiles);
+
+        case 'c':
+        case 'C': {
+            if (size == 0 || selected < 0 || selected >= size) break;
+            char decrypted[512] = {0};
+            if (decrypt_password(ctx, profiles[selected].password, decrypted, sizeof(decrypted))) {
+                FILE *pipe = popen("xclip -selection clipboard 2>/dev/null || pbcopy 2>/dev/null || wl-copy 2>/dev/null", "w");
+                if (pipe) {
+                    fprintf(pipe, "%s", decrypted);
+                    pclose(pipe);
+                    printf(GREEN "\n  Password copied to clipboard." RESET "\n");
+                } else {
+                    printf(YELLOW "\n  Copy failed. Password: %s" RESET "\n", decrypted);
+                }
+                memset(decrypted, 0, sizeof(decrypted));
+            } else {
+                printf(RED "\n  Decryption failed." RESET "\n");
+            }
+            printf("\n  Press Enter to continue...");
+            fflush(stdout);
+            char dummy[8];
+            read_line(dummy, sizeof(dummy));
+            break;
+        }
+
+        case 'k':
+        case 'K':
+            if (selected > 0) {
+                selected--;
+                reveal = 0;
+            }
+            break;
+
+        case 'j':
+        case 'J':
+            if (selected < size - 1) {
+                selected++;
+                reveal = 0;
+            }
+            break;
+        }
     }
 
-    notcurses_stop(nc);
+    clear_screen();
     memset(masterPass, 0, sizeof(masterPass));
     free(profiles);
     gpgme_release(ctx);
-
-    return 0;
-}
-
-void disable_echo(void) {
-    struct termios tty;
-    tcgetattr(STDIN_FILENO, &tty);
-    tty.c_lflag &= ~ECHO;
-    tty.c_lflag &= ~ECHOE;
-    tcsetattr(STDIN_FILENO, TCSANOW, &tty);
-}
-void enable_echo(void) {
-    struct termios tty;
-    tcgetattr(STDIN_FILENO, &tty);
-    tty.c_lflag |= ECHO;
-    tcsetattr(STDIN_FILENO, TCSANOW, &tty);
-}
-
-void draw_box(struct ncplane *plane, int y, int x, int rows, int cols,
-              const char *title, uint64_t border_ch, uint64_t title_ch) {
-
-    ncplane_set_channels(plane, border_ch);
-
-    ncplane_putstr_yx(plane, y, x, "╭");
-    for (int i = 1; i < cols - 1; i++) {
-        ncplane_putstr_yx(plane, y, x, "─");
-    }
-    ncplane_putstr_yx(plane, y, x + cols - 1, "╮");
-
-    for (int i = 1; i < rows - 1; i++) {
-        ncplane_putstr_yx(plane, y + i, x, "|");
-        ncplane_putstr_yx(plane, y + i, x + cols - 1, "|");
-    }
-
-    ncplane_putstr_yx(plane, y + rows - 1, x,          "╰");
-    for (int i = 1; i < cols - 1; i++)
-        ncplane_putstr_yx(plane, y + rows - 1, x + i, "─");
-    ncplane_putstr_yx(plane, y + rows - 1, x + cols-1, "╯");
-
-    if (title) {
-        ncplane_set_channels(plane, title_ch);
-        int tx = x + 2;
-
-        ncplane_putstr_yx(plane, y, tx, " ");
-        ncplane_putstr_yx(plane, y, tx + 1, title);
-        ncplane_putstr_yx(plane, y, tx + 1 + (int)strlen(title), " ");
-    }
-}
-
-void draw_sidebar(UIState *ui, int size, struct Profile *profiles) {
-
-    struct ncplane *p = ui->sidebar;
-    unsigned int rows, cols;
-    ncplane_dim_yx(p, &rows, &cols);
-
-    ncplane_set_bg_rgb8(p,
-        (COL_BG_MID >> 16) & 0xff,
-        (COL_BG_MID >> 8) & 0xff,
-        (COL_BG_MID) & 0xff);
-    ncplane_erase(p);
-
-    uint64_t border_ch = NCCHANNELS_INITIALIZER(
-        (COL_ACCENT >> 16) & 0xff, (COL_ACCENT >> 8) & 0xff, COL_ACCENT & 0xff,
-        (COL_BG_MID >> 16) & 0xff, (COL_BG_MID >> 8) & 0xff, COL_BG_MID & 0xff);
-
-    uint64_t title_ch = NCCHANNELS_INITIALIZER(
-        (COL_ACCENT2 >> 16) & 0xff, (COL_ACCENT2 >> 8) & 0xff, COL_ACCENT2 & 0xff,
-        (COL_BG_MID >> 16)  & 0xff, (COL_BG_MID >> 8)  & 0xff, COL_BG_MID  & 0xff);
-
-    draw_box(p, 0, 0, rows - 1, cols, "Lihim", border_ch, title_ch);
-
-    for (int i = 0; i < (int)size && i < (int)rows - 4; i++) {
-        int row = i + 2;
-        int is_selected = (i == ui->selected);
-
-        if (is_selected) {
-            ncplane_set_bg_rgb8(p,
-                (COL_BG_LIGHT >> 16) & 0xff,
-                (COL_BG_LIGHT >> 8) & 0xff,
-                (COL_BG_LIGHT) & 0xff);
-            ncplane_set_fg_rgb8(p,
-                (COL_ACCENT2 >> 16) & 0xff,
-                (COL_ACCENT2 >> 8) & 0xff,
-                (COL_ACCENT2) & 0xff);
-            ncplane_putstr_yx(p, row, 2, "▶ ");
-        }
-        else {
-            ncplane_set_bg_rgb8(p,
-                (COL_BG_MID >> 16) & 0xff,
-                (COL_BG_MID >> 8)  & 0xff,
-                (COL_BG_MID)       & 0xff);
-            ncplane_set_fg_rgb8(p,
-                (COL_TEXT >> 16) & 0xff,
-                (COL_TEXT >> 8)  & 0xff,
-                (COL_TEXT)       & 0xff);
-            ncplane_putstr_yx(p, row, 2, "  ");
-        }
-
-        char display[64];
-        snprintf(display, sizeof(display), "%-*.*s",
-            cols - 6, cols - 6, profiles[i].name);
-        ncplane_putstr_yx(p, row, 4, display);
-
-        if (size == 0) {
-            ncplane_set_fg_rgb8(p,
-                (COL_MUTED >> 16) & 0xff,
-                (COL_MUTED >> 8)  & 0xff,
-                (COL_MUTED)       & 0xff);
-            ncplane_set_bg_rgb8(p,
-                (COL_BG_MID >> 16) & 0xff,
-                (COL_BG_MID >> 8)  & 0xff,
-                (COL_BG_MID)       & 0xff);
-            ncplane_putstr_yx(p, 2, 2, "No profiles yet.");
-            ncplane_putstr_yx(p, 3, 2, "Press [A] to add.");
-        }
-    }
-}
-
-void draw_detail(UIState *ui, gpgme_ctx_t ctx, int size,
-                struct Profile *profiles) {
-
-    struct ncplane *p = ui->main_panel;
-    unsigned rows, cols;
-    ncplane_dim_yx(p, &rows, &cols);
-
-    ncplane_set_bg_rgb8(p,
-        (COL_BG_MID >> 16) & 0xff,
-        (COL_BG_MID >> 8)  & 0xff,
-        (COL_BG_MID)       & 0xff);
-    ncplane_erase(p);
-
-    uint64_t border_ch = NCCHANNELS_INITIALIZER(
-        (COL_BORDER >> 16) & 0xff, (COL_BORDER >> 8) & 0xff, COL_BORDER & 0xff,
-        (COL_BG_MID >> 16) & 0xff, (COL_BG_MID >> 8) & 0xff, COL_BG_MID & 0xff);
-
-    uint64_t title_ch = NCCHANNELS_INITIALIZER(
-        (COL_TEXT >> 16) & 0xff, (COL_TEXT >> 8) & 0xff, COL_TEXT & 0xff,
-        (COL_BG_MID >> 16) & 0xff, (COL_BG_MID >> 8) & 0xff, COL_BG_MID & 0xff);
-
-    draw_box(p, 0, 0, rows - 1, cols, "Profile Details", border_ch, title_ch);
-
-    if (size == 0 || ui->selected < 0 || ui->selected >= size) {
-        ncplane_set_fg_rgb8(p,
-            (COL_MUTED >> 16) & 0xff,
-            (COL_MUTED >> 8)  & 0xff,
-            (COL_MUTED)       & 0xff);
-        ncplane_set_bg_rgb8(p,
-            (COL_BG_MID >> 16) & 0xff,
-            (COL_BG_MID >> 8)  & 0xff,
-            (COL_BG_MID)       & 0xff);
-        ncplane_putstr_yx(p, rows/2, cols/2 - 10, "No profile selected");
-        return;
-    }
-
-    struct Profile *profile = &profiles[ui->selected];
-
-    #define DRAW_FIELD(row, label, value, val_color)                      \
-        do {                                                               \
-            ncplane_set_fg_rgb8(p,                                         \
-                (COL_MUTED >> 16) & 0xff,                                  \
-                (COL_MUTED >> 8)  & 0xff,                                  \
-                (COL_MUTED)       & 0xff);                                 \
-            ncplane_set_bg_rgb8(p,                                         \
-                (COL_BG_MID >> 16) & 0xff,                                 \
-                (COL_BG_MID >> 8)  & 0xff,                                 \
-                (COL_BG_MID)       & 0xff);                                \
-            ncplane_putstr_yx(p, row, 3, label);                           \
-            ncplane_set_fg_rgb8(p,                                         \
-                (val_color >> 16) & 0xff,                                  \
-                (val_color >> 8)  & 0xff,                                  \
-                (val_color)       & 0xff);                                 \
-            ncplane_putstr_yx(p, (row) + 1, 3, value);                    \
-        } while(0)
-
-    DRAW_FIELD(2,  "NAME",     profile->name,     COL_TEXT);
-    DRAW_FIELD(5,  "USERNAME", profile->username, COL_ACCENT2);
-    DRAW_FIELD(11, "URL",      profile->url,      COL_ACCENT);
-
-    #undef DRAW_FIELD
-
-    char decrypted[512] = {0};
-    char pass_display[512];
-
-    ncplane_set_fg_rgb8(p,
-        (COL_MUTED >> 16) & 0xff,
-        (COL_MUTED >> 8)  & 0xff,
-        (COL_MUTED)       & 0xff);
-    ncplane_set_bg_rgb8(p,
-        (COL_BG_MID >> 16) & 0xff,
-        (COL_BG_MID >> 8)  & 0xff,
-        (COL_BG_MID)       & 0xff);
-    ncplane_putstr_yx(p, 8, 3, "PASSWORD");
-
-    if (decrypt_password(ctx, profile->password,
-                        decrypted, sizeof(decrypted))) {
-        if (ui->show_password) {
-            snprintf(pass_display, sizeof(pass_display), "%s", decrypted);
-            ncplane_set_fg_rgb8(p,
-                (COL_GREEN >> 16) & 0xff,
-                (COL_GREEN >> 8)  & 0xff,
-                (COL_GREEN)       & 0xff);
-        }
-        else {
-            int len = strlen(decrypted);
-            memset(pass_display, '*', len);
-            pass_display[len] = '\0';
-            ncplane_set_fg_rgb8(p,
-                (COL_MUTED >> 16) & 0xff,
-                (COL_MUTED >> 8)  & 0xff,
-                (COL_MUTED)       & 0xff);
-        }
-
-        memset(decrypted, 0, sizeof(decrypted));
-    }
-    else {
-        snprintf(pass_display, sizeof(pass_display), "[decryption failed]");
-        ncplane_set_fg_rgb8(p,
-            (COL_RED >> 16) & 0xff,
-            (COL_RED >> 8)  & 0xff,
-            (COL_RED)       & 0xff);
-    }
-
-    ncplane_set_bg_rgb8(p,
-        (COL_BG_MID >> 16) & 0xff,
-        (COL_BG_MID >> 8)  & 0xff,
-        (COL_BG_MID)       & 0xff);
-    ncplane_putstr_yx(p, 9, 3, pass_display);
-    memset(pass_display, 0, sizeof(pass_display));
-
-    ncplane_set_fg_rgb8(p,
-        (COL_MUTED >> 16) & 0xff,
-        (COL_MUTED >> 8)  & 0xff,
-        (COL_MUTED)       & 0xff);
-    ncplane_putstr_yx(p, 9, cols - 18,
-        ui->show_password ? "[V] Hide" : "[V] Show");
-
-}
-
-void draw_form(UIState *ui, const char *title) {
-
-    struct ncplane *p = ui->main_panel;
-    unsigned int rows, cols;
-    ncplane_dim_yx(p, &rows, &cols);
-
-
-    ncplane_set_bg_rgb8(p,
-        (COL_BG_MID >> 16) & 0xff,
-        (COL_BG_MID >> 8)  & 0xff,
-        (COL_BG_MID)       & 0xff);
-    ncplane_erase(p);
-
-    uint64_t border_ch = NCCHANNELS_INITIALIZER(
-        (COL_ACCENT >> 16) & 0xff, (COL_ACCENT >> 8) & 0xff, COL_ACCENT & 0xff,
-        (COL_BG_MID >> 16) & 0xff, (COL_BG_MID >> 8) & 0xff, COL_BG_MID & 0xff);
-
-    uint64_t title_ch = NCCHANNELS_INITIALIZER(
-        (COL_ACCENT2 >> 16) & 0xff, (COL_ACCENT2 >> 8) & 0xff, COL_ACCENT2 & 0xff,
-        (COL_BG_MID >> 16)  & 0xff, (COL_BG_MID >> 8)  & 0xff, COL_BG_MID  & 0xff);
-
-    draw_box(p, 0, 0, rows - 1, cols, title, border_ch, title_ch);
-
-    const char *labels[] = { "Name", "Username", "Password", "URL" };
-    const char *values[] = {
-        ui->form_name, ui->form_username,
-        ui->form_password, ui->form_url
-    };
-
-    for (int i = 0; i < 4; i++) {
-        int row = 2 + i * 4;
-        int is_active = (i == ui->form_field);
-
-        if (is_active) {
-            ncplane_set_fg_rgb8(p,
-                (COL_ACCENT2 >> 16) & 0xff,
-                (COL_ACCENT2 >> 8)  & 0xff,
-                (COL_ACCENT2)       & 0xff);
-        }
-        else {
-            ncplane_set_fg_rgb8(p,
-                (COL_ACCENT2 >> 16) & 0xff,
-                (COL_ACCENT2 >> 8)  & 0xff,
-                (COL_ACCENT2)       & 0xff);
-        }
-        ncplane_set_bg_rgb8(p,
-            (COL_BG_MID >> 16) & 0xff,
-            (COL_BG_MID >> 8)  & 0xff,
-            (COL_BG_MID)       & 0xff);
-        ncplane_putstr_yx(p, row, 3, labels[i]);
-
-        int input_width = cols - 8;
-
-        if (is_active) {
-            ncplane_set_bg_rgb8(p,
-                (COL_BG_LIGHT >> 16) & 0xff,
-                (COL_BG_LIGHT >> 8)  & 0xff,
-                (COL_BG_LIGHT)       & 0xff);
-            ncplane_set_fg_rgb8(p,
-                (COL_TEXT >> 16) & 0xff,
-                (COL_TEXT >> 8)  & 0xff,
-                (COL_TEXT)       & 0xff);
-        }
-        else {
-            ncplane_set_bg_rgb8(p,
-                (COL_BG_MID >> 16) & 0xff,
-                (COL_BG_MID >> 8)  & 0xff,
-                (COL_BG_MID)       & 0xff);
-            ncplane_set_fg_rgb8(p,
-                (COL_MUTED >> 16) & 0xff,
-                (COL_MUTED >> 8)  & 0xff,
-                (COL_MUTED)       & 0xff);
-        }
-
-        char blank[256];
-        memset(blank, ' ', input_width);
-        blank[input_width] = '\0';
-        ncplane_putstr_yx(p, row + 1, 4, blank);
-
-        char display[256] = {0};
-        if (i == 2 && !ui->show_password) {
-            int len = strlen(values[i]);
-            memset(display, '*', len);
-            display[len] = '\0';
-        }
-        else {
-            snprintf(display, sizeof(display), "%s", values[i]);
-        }
-        ncplane_putstr_yx(p, row + 1, 4, display);
-
-        if (is_active) {
-            int cursor_x = 4 + (int)strlen(values[i]);
-            ncplane_putstr_yx(p, row + 1, cursor_x, "█");
-        }
-    }
-
-    ncplane_set_fg_rgb8(p,
-        (COL_MUTED >> 16) & 0xff,
-        (COL_MUTED >> 8)  & 0xff,
-        (COL_MUTED)       & 0xff);
-    ncplane_set_bg_rgb8(p,
-        (COL_BG_MID >> 16) & 0xff,
-        (COL_BG_MID >> 8)  & 0xff,
-        (COL_BG_MID)       & 0xff);
-    ncplane_putstr_yx(p, rows - 3, 3,
-        "[Tab] Next field   [Enter] Save   [Esc] Cancel");
-}
-
-void draw_delete(UIState *ui, int size, struct Profile *profiles) {
-
-    struct ncplane *p = ui->main_panel;
-    unsigned int rows, cols;
-    ncplane_dim_yx(p, &rows, &cols);
-
-    ncplane_set_bg_rgb8(p,
-        (COL_BG_MID >> 16) & 0xff,
-        (COL_BG_MID >> 8)  & 0xff,
-        (COL_BG_MID)       & 0xff);
-    ncplane_erase(p);
-
-
-    uint64_t border_ch = NCCHANNELS_INITIALIZER(
-        (COL_RED >> 16) & 0xff, (COL_RED >> 8) & 0xff, COL_RED & 0xff,
-        (COL_BG_MID >> 16) & 0xff, (COL_BG_MID >> 8) & 0xff, COL_BG_MID & 0xff);
-
-    uint64_t title_ch = NCCHANNELS_INITIALIZER(
-        (COL_RED >> 16) & 0xff, (COL_RED >> 8) & 0xff, COL_RED & 0xff,
-        (COL_BG_MID >> 16) & 0xff, (COL_BG_MID >> 8) & 0xff, COL_BG_MID & 0xff);
-
-    draw_box(p, 0, 0, rows - 1, cols,
-                "⚠ Delete Profile", border_ch, title_ch);
-
-    if (ui->selected >= 0 && ui -> selected < size) {
-        char msg[256];
-        snprintf(msg, sizeof(msg),
-            "Delete \"%s\"? This cannot be undone.",
-            profiles[ui->selected].name);
-
-        ncplane_set_fg_rgb8(p,
-            (COL_TEXT >> 16) & 0xff,
-            (COL_TEXT >> 8)  & 0xff,
-            (COL_TEXT)       & 0xff);
-        ncplane_set_bg_rgb8(p,
-            (COL_BG_MID >> 16) & 0xff,
-            (COL_BG_MID >> 8)  & 0xff,
-            (COL_BG_MID)       & 0xff);
-        ncplane_putstr_yx(p, rows/2 - 1,
-                            cols/2 - (int)strlen(msg)/2, msg);
-
-        ncplane_set_fg_rgb8(p,
-            (COL_MUTED >> 16) & 0xff,
-            (COL_MUTED >> 8)  & 0xff,
-            (COL_MUTED)       & 0xff);
-        ncplane_putstr_yx(p, rows/2 + 1,
-                            cols/2 - 16,
-                            "[Y] Confirm Delete    [N / Esc] Cancel");
-    }
-}
-
-void draw_statusbar(UIState *ui) {
-
-    struct ncplane *p = ui->statusbar;
-
-    ncplane_set_bg_rgb8(p,
-        (COL_ACCENT >> 16) & 0xff,
-        (COL_ACCENT >> 8)  & 0xff,
-        (COL_ACCENT)       & 0xff);
-    ncplane_erase(p);
-
-    ncplane_set_fg_rgb8(p, 0xff, 0xff, 0xff);
-
-    if (ui->mode == MODE_LIST)
-        ncplane_putstr_yx(p, 0, 2,
-            "[A] Add  [E] Edit  [D] Delete  [V] Show/Hide  [↑↓] Navigate  [Q] Quit");
-    else if (ui->mode == MODE_ADD)
-        ncplane_putstr_yx(p, 0, 2, "Adding new profile...");
-    else if (ui->mode == MODE_EDIT)
-        ncplane_putstr_yx(p, 0, 2, "Editing profile...");
-    else if (ui->mode == MODE_DELETE)
-        ncplane_putstr_yx(p, 0, 2, "Confirm deletion...");
-}
-
-void redraw(UIState *ui, gpgme_ctx_t ctx,
-            int size, struct Profile *profiles) {
-
-    draw_sidebar(ui, size, profiles);
-
-    switch(ui->mode) {
-        case MODE_LIST:
-            draw_detail(ui, ctx, size, profiles);
-            break;
-        case MODE_ADD:
-            draw_form(ui, "✚ Add Profile");
-            break;
-        case MODE_EDIT:
-            draw_form(ui, "✎ Edit Profile");
-            break;
-        case MODE_DELETE:
-            draw_delete(ui, size, profiles);
-            break;
-    }
-
-    draw_statusbar(ui);
-    notcurses_render(ui->nc);
-}
-
-int handle_form_key(UIState *ui, uint32_t key) {
-
-    char *fields[] = { ui->form_name, ui->form_username,
-                       ui->form_password, ui->form_url};
-    size_t field_sizes[] = { 100, 100, 100, 100 };
-
-    char *cur = fields[ui->form_field];
-    size_t cur_len = strlen(cur);
-
-    if (key == NCKEY_TAB) {
-        ui->form_field = (ui->form_field + 1) % 4;
-        return 1;
-    }
-
-    if (key == NCKEY_BACKSPACE || key == 127) {
-        if (cur_len > 0) {
-            cur[cur_len - 1] = '\0';\
-        }
-        return 1;
-    }
-
-    if (key >= 32 && key < 127) {
-        if (cur_len < field_sizes[ui->form_field] - 1) {
-            cur[cur_len] = (char)key;
-            cur[cur_len + 1] = '\0';
-        }
-        return 1;
-    }
-
     return 0;
 }
